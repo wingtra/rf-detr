@@ -165,12 +165,8 @@ class RFDETR:
         return TrainConfig(**kwargs)
 
     def get_model(self, config: ModelConfig):
-        model = Model(**config.dict())
-        # Enable raw logits in postprocessor
-        if hasattr(model, 'postprocessors') and 'bbox' in model.postprocessors:
-            model.postprocessors['bbox'].return_raw_logits = True
-        return model
-    
+        return Model(**config.dict())
+
     # Get class_names from the model
     @property
     def class_names(self):
@@ -306,12 +302,14 @@ class RFDETR:
                 # Prepare data dict for supervision.Detections
                 data = {}
                 if raw_logits is not None and return_raw_logits:
-                    data["raw_logits"] = raw_logits[keep].float().cpu().numpy()
+                    # Keep as CPU tensor to avoid unnecessary conversions
+                    data["raw_logits"] = raw_logits[keep].float().cpu()
 
                 detections = sv.Detections(
                     xyxy=boxes.float().cpu().numpy(),
                     confidence=scores.float().cpu().numpy(),
                     class_id=labels.cpu().numpy(),
+                    data=data if data else None,  # Add raw logits to data field
                 )
                 detections_list.append(detections)
         finally:

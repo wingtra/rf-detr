@@ -165,7 +165,11 @@ class RFDETR:
         return TrainConfig(**kwargs)
 
     def get_model(self, config: ModelConfig):
-        return Model(**config.dict())
+        model = Model(**config.dict())
+        # Enable raw logits in postprocessor
+        if hasattr(model, 'postprocessors') and 'bbox' in model.postprocessors:
+            model.postprocessors['bbox'].return_raw_logits = True
+        return model
     
     # Get class_names from the model
     @property
@@ -179,6 +183,7 @@ class RFDETR:
             self,
             images: Union[str, Image.Image, np.ndarray, torch.Tensor, List[Union[str, np.ndarray, Image.Image, torch.Tensor]]],
             threshold: float = 0.5,
+            return_raw_logits: bool = False,
             **kwargs,
     ) -> Union[sv.Detections, List[sv.Detections]]:
         """Performs object detection on the input images and returns bounding box
@@ -195,13 +200,16 @@ class RFDETR:
                 as file paths, PIL Images, NumPy arrays, or torch.Tensors.
             threshold (float, optional):
                 The minimum confidence score needed to consider a detected bounding box valid.
+            return_raw_logits (bool, optional):
+                Whether to include raw logits in the returned detections.
             **kwargs:
                 Additional keyword arguments.
 
         Returns:
             Union[sv.Detections, List[sv.Detections]]: A single or multiple Detections
                 objects, each containing bounding box coordinates, confidence scores,
-                and class IDs.
+                and class IDs. If return_raw_logits=True, raw logits are included in
+                the data field.
         """
         if not self._is_optimized_for_inference and not self._has_warned_about_not_being_optimized_for_inference:
             logger.warning(
@@ -266,39 +274,50 @@ class RFDETR:
                                      "Alternatively, you can recompile the optimized model for a different batch size "
                                      "by calling model.optimize_for_inference(batch_size=<new_batch_size>).")
 
-        with torch.inference_mode():
-            if self._is_optimized_for_inference:
-                predictions = self.model.inference_model(batch_tensor.to(dtype=self._optimized_dtype))
-            else:
-                predictions = self.model.model(batch_tensor)
-            if isinstance(predictions, tuple):
-                predictions = {
-                    "pred_logits": predictions[1],
-                    "pred_boxes": predictions[0]
-                }
-            target_sizes = torch.tensor(orig_sizes, device=self.model.device)
-            results = self.model.postprocessors["bbox"](predictions, target_sizes=target_sizes)
+        original_return_raw_logits = self.model.postprocessors['bbox'].return_raw_logits
+        if return_raw_logits:
+            self.model.postprocessors['bbox'].return_raw_logits = True
+        try:
+            with torch.inference_mode():
+                if self._is_optimized_for_inference:
+                    predictions = self.model.inference_model(batch_tensor.to(dtype=self._optimized_dtype))
+                else:
+                    predictions = self.model.model(batch_tensor)
+                if isinstance(predictions, tuple):
+                    predictions = {
+                        "pred_logits": predictions[1],
+                        "pred_boxes": predictions[0]
+                    }
+                target_sizes = torch.tensor(orig_sizes, device=self.model.device)
+                results = self.model.postprocessors["bbox"](predictions, target_sizes=target_sizes)
 
-        detections_list = []
-        for result in results:
-            scores = result["scores"]
-            labels = result["labels"]
-            boxes = result["boxes"]
+            detections_list = []
+            for result in results:
+                scores = result["scores"]
+                labels = result["labels"]
+                boxes = result["boxes"]
+                raw_logits = result.get("raw_logits", None)
 
-            keep = scores > threshold
-            scores = scores[keep]
-            labels = labels[keep]
-            boxes = boxes[keep]
+                keep = scores > threshold
+                scores = scores[keep]
+                labels = labels[keep]
+                boxes = boxes[keep]
 
-            detections = sv.Detections(
-                xyxy=boxes.float().cpu().numpy(),
-                confidence=scores.float().cpu().numpy(),
-                class_id=labels.cpu().numpy(),
-            )
-            detections_list.append(detections)
+                # Prepare data dict for supervision.Detections
+                data = {}
+                if raw_logits is not None and return_raw_logits:
+                    data["raw_logits"] = raw_logits[keep].float().cpu().numpy()
+
+                detections = sv.Detections(
+                    xyxy=boxes.float().cpu().numpy(),
+                    confidence=scores.float().cpu().numpy(),
+                    class_id=labels.cpu().numpy(),
+                )
+                detections_list.append(detections)
+        finally:
+            self.model.postprocessors['bbox'].return_raw_logits = original_return_raw_logits
 
         return detections_list if len(detections_list) > 1 else detections_list[0]
-
 
 class RFDETRBase(RFDETR):
     def get_model_config(self, **kwargs):

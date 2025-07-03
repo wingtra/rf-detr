@@ -532,9 +532,10 @@ def position_supervised_loss(inputs, targets, num_boxes, alpha: float = 0.25, ga
 
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
-    def __init__(self, num_select=300) -> None:
+    def __init__(self, num_select=300, return_raw_logits=False) -> None:
         super().__init__()
         self.num_select = num_select
+        self.return_raw_logits = return_raw_logits
 
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
@@ -565,6 +566,20 @@ class PostProcess(nn.Module):
 
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
+        # Add raw logits if requested
+        if self.return_raw_logits:
+            # Extract raw logits for the selected detections
+            batch_raw_logits = []
+            for i, (batch_scores, batch_topk_boxes) in enumerate(zip(scores, topk_boxes)):
+                # Get the raw logits for this batch
+                batch_logits = out_logits[i]  # Shape: [num_queries, num_classes]
+                # Select the logits for the top-k detections
+                selected_logits = batch_logits[batch_topk_boxes]  # Shape: [num_select, num_classes]
+                batch_raw_logits.append(selected_logits)
+
+            # Add raw logits to results
+            for result, raw_logits in zip(results, batch_raw_logits):
+                result['raw_logits'] = raw_logits
         return results
 
 

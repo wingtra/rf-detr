@@ -302,8 +302,7 @@ class RFDETR:
                 # Prepare data dict for supervision.Detections
                 data = {}
                 if raw_logits is not None and return_raw_logits:
-                    # Keep as CPU tensor to avoid unnecessary conversions
-                    data["raw_logits"] = raw_logits[keep].float().cpu()
+                    data["raw_logits"] = raw_logits[keep].float().cpu().numpy()
 
                 detections = sv.Detections(
                     xyxy=boxes.float().cpu().numpy(),
